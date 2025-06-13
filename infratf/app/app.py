@@ -4,42 +4,51 @@ import json
 import base64
 import face_recognition
 import mysql.connector
+from mysql.connector import Error
 import numpy as np
 from flask_cors import CORS
+import time
+import uuid
 
 app = Flask(__name__)
 CORS(app)
 
 DB_CONFIG = {
-    "host": os.environ.get("DB_HOST", "localhost"),
-    "user": os.environ.get("DB_USER", "root"),
-    "password": os.environ.get("DB_PASSWORD", "admin"),
-    "database": os.environ.get("DB_NAME", "detection_face_db")
+    "host": os.environ["DB_HOST"],
+    "user": os.environ["DB_USER"],
+    "password": os.environ["DB_PASSWORD"],
+    "database": os.environ["DB_NAME"]
 }
 
 def conectar_db():
-    db = mysql.connector.connect(
-        host=DB_CONFIG["host"],
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"]
-    )
-    cursor = db.cursor()
-    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
-    cursor.execute(f"USE {DB_CONFIG['database']}")
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS personas (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            nombre VARCHAR(100),
-            apellido_paterno VARCHAR(100),
-            apellido_materno VARCHAR(100),
-            correo VARCHAR(100),
-            requisitoriado BOOLEAN,
-            foto LONGBLOB,
-            KP LONGTEXT
-        )
-    """)
-    db.commit()
-    return db, cursor
+    for intento in range(10):
+        try:
+            db = mysql.connector.connect(
+                host=DB_CONFIG["host"],
+                user=DB_CONFIG["user"],
+                password=DB_CONFIG["password"]
+            )
+            cursor = db.cursor()
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
+            cursor.execute(f"USE {DB_CONFIG['database']}")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS personas (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    nombre VARCHAR(100),
+                    apellido_paterno VARCHAR(100),
+                    apellido_materno VARCHAR(100),
+                    correo VARCHAR(100),
+                    requisitoriado BOOLEAN,
+                    foto LONGBLOB,
+                    KP LONGTEXT
+                )
+            """)
+            db.commit()
+            return db, cursor
+        except Error as e:
+            print(f"[ERROR] Intento {intento + 1}: {e}")
+            time.sleep(5)
+    raise Exception("No se pudo conectar con la base de datos después de múltiples intentos.")
 
 def calcular_distancia(emb1, emb2):
     return np.linalg.norm(np.array(emb1) - np.array(emb2))
@@ -47,9 +56,10 @@ def calcular_distancia(emb1, emb2):
 def registrar_persona(nombre, apellido_paterno, apellido_materno, correo, requisitoriado, imagen_b64):
     try:
         img_data = base64.b64decode(imagen_b64)
-        with open("temp_img.jpg", "wb") as f:
+        temp_file = f"/tmp/temp_img_{uuid.uuid4().hex}.jpg"
+        with open(temp_file, "wb") as f:
             f.write(img_data)
-        img = face_recognition.load_image_file("temp_img.jpg")
+        img = face_recognition.load_image_file(temp_file)
         encodings = face_recognition.face_encodings(img)
 
         if not encodings:
@@ -69,7 +79,7 @@ def registrar_persona(nombre, apellido_paterno, apellido_materno, correo, requis
         cursor.close()
         db.close()
 
-        os.remove("temp_img.jpg")
+        os.remove(temp_file)
 
         return {"message": "Persona registrada exitosamente."}, 200
 
@@ -79,12 +89,12 @@ def registrar_persona(nombre, apellido_paterno, apellido_materno, correo, requis
 def reconocer_persona(imagen_b64, umbral):
     try:
         img_data = base64.b64decode(imagen_b64)
-        with open("temp_img.jpg", "wb") as f:
+        temp_file = f"/tmp/temp_img_{uuid.uuid4().hex}.jpg"
+        with open(temp_file, "wb") as f:
             f.write(img_data)
-
-        img = face_recognition.load_image_file("temp_img.jpg")
+        img = face_recognition.load_image_file(temp_file)
         encodings = face_recognition.face_encodings(img)
-        os.remove("temp_img.jpg")
+        os.remove(temp_file)
 
         if not encodings:
             return {"message": "No se detectó rostro."}, 200
@@ -142,7 +152,6 @@ def api_registrar():
         return jsonify({"error": "Faltan campos obligatorios"}), 400
 
     try:
-        # Convertir imagen a base64
         imagen_file = request.files['imagen']
         imagen_bytes = imagen_file.read()
         imagen_b64 = base64.b64encode(imagen_bytes).decode('utf-8')
@@ -171,4 +180,4 @@ def api_reconocer():
 
 if __name__ == "__main__":
     conectar_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
