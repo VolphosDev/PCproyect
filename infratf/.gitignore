@@ -1,3 +1,7 @@
 .terraform
 .terraform.lock.hcl
 face-key.pem
+*/photos
+*.info
+*.tfstate
+*.tfstate.backup
