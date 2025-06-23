@@ -46,3 +46,10 @@ EOF
 echo "[INFO] Recargando systemd y arrancando face_app..."
 sudo systemctl daemon-reload
 sudo systemctl enable --now face_app
+
+echo "[INFO] Ejecutando init_db.py para inicializar la base de datos (una sola vez)..."
+if [ -f "/home/ubuntu/app/init_db.py" ]; then
+  python3 /home/ubuntu/app/init_db.py
+else
+  echo "[WARN] init_db.py no encontrado en /home/ubuntu/app. Saltando inicialización de DB."
+fi
