@@ -16,12 +16,12 @@ pip3 --version
 echo "[INFO] Instalando dependencias de Python..."
 cd /home/ubuntu/app
 pip3 install --upgrade pip
-pip3 install flask flask-cors mysql-connector-python mtcnn tensorflow-cpu scikit-learn opencv-python
+pip3 install --user flask flask-cors mysql-connector-python mtcnn tensorflow-cpu scikit-learn opencv-python gunicorn
 
 echo "[INFO] Configurando MySQL..."
 sudo systemctl start mysql
 sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'admin'; FLUSH PRIVILEGES;"
-sudo mysql -uroot -padmin -e "CREATE DATABASE IF NOT EXISTS detection_face_db"
+sudo mysql -uroot -padmin -e "CREATE DATABASE IF NOT EXISTS face_detection_db"
 
 echo "[INFO] Configurando Gunicorn como servicio..."
 
@@ -34,15 +34,15 @@ After=network.target
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/app
-Environment="PATH=/usr/bin"
-ExecStart=/usr/local/bin/gunicorn -b 0.0.0.0:5000 app:app
+Environment="PATH=/home/ubuntu/.local/bin:/usr/bin"
+ExecStart=/home/ubuntu/.local/bin/gunicorn -b 0.0.0.0:5000 app:app
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-echo "[INFO] Habilitando y arrancando el servicio face_app..."
-sudo systemctl daemon-reexec
+echo "[INFO] Recargando systemd y arrancando face_app..."
 sudo systemctl daemon-reload
-sudo systemctl enable face_app
-sudo systemctl start face_app
+sudo systemctl enable --now face_app

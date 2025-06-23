@@ -43,7 +43,6 @@ def load_embedder():
             except Exception as e:
                 print(f"[WARN] No se pudo cargar el modelo: {e}")
 
-
 def check_and_run_data_insert():
     db, c = connect_db()
     c.execute("SELECT COUNT(*) FROM personas")
@@ -168,37 +167,67 @@ def list_users():
     c.close(); db.close()
     return jsonify(page=page, size=size, total=total, data=data), 200
 
-@app.route("/usuario/<int:id>", methods=["GET", "DELETE", "OPTIONS"])
+@app.route("/usuario/<int:id>", methods=["GET", "OPTIONS", "DELETE"])
 def user_detail(id):
+    if request.method == "OPTIONS":
+        return '', 200
+
+    if request.method == "DELETE":
+        return jsonify(error="Método de eliminación no soportado en esta ruta. Usa /delete-user/<id>"), 405
+
     db, c = connect_db()
-    if request.method == "GET":
-        c.execute("SELECT id,nombre,apellido_paterno,apellido_materno,correo,requisitoriado FROM personas WHERE id=%s", (id,))
-        r = c.fetchone()
-        if not r:
-            c.close(); db.close()
-            return jsonify(error="No existe"), 404
-
-        c.execute("SELECT k.id_kp, k.foto FROM kp k JOIN personas_keypoints pk ON k.id_kp = pk.id_kp WHERE pk.id_persona = %s", (id,))
-        fotos = []
-        for kid, foto in c.fetchall():
-            foto_base64 = base64.b64encode(foto).decode("utf-8") if foto else None
-            fotos.append({"id_kp": kid, "foto": foto_base64})
-
+    c.execute("SELECT id,nombre,apellido_paterno,apellido_materno,correo,requisitoriado FROM personas WHERE id=%s", (id,))
+    r = c.fetchone()
+    if not r:
         c.close(); db.close()
+        return jsonify(error="No existe"), 404
 
-        return jsonify(
-            id=r[0],
-            nombre=r[1],
-            apellido_paterno=r[2],
-            apellido_materno=r[3],
-            correo=r[4],
-            requisitoriado=bool(r[5]),
-            fotos=fotos
-        ), 200
+    c.execute("SELECT k.id_kp, k.foto FROM kp k JOIN personas_keypoints pk ON k.id_kp = pk.id_kp WHERE pk.id_persona = %s", (id,))
+    fotos = []
+    for kid, foto in c.fetchall():
+        foto_base64 = base64.b64encode(foto).decode("utf-8") if foto else None
+        fotos.append({"id_kp": kid, "foto": foto_base64})
 
-    c.execute("DELETE p,k FROM personas p LEFT JOIN personas_keypoints pk ON p.id=pk.id_persona LEFT JOIN kp k ON pk.id_kp=k.id_kp WHERE p.id=%s", (id,))
-    db.commit(); db.close()
-    return jsonify(message="Usuario eliminado"), 200
+    c.close(); db.close()
+
+    return jsonify(
+        id=r[0],
+        nombre=r[1],
+        apellido_paterno=r[2],
+        apellido_materno=r[3],
+        correo=r[4],
+        requisitoriado=bool(r[5]),
+        fotos=fotos
+    ), 200
+
+@app.route("/delete-user/<int:id>", methods=["DELETE"])
+def eliminar_usuario(id):
+    try:
+        db, c = connect_db()
+
+        # 1. Obtener todos los id_kp relacionados con el usuario
+        c.execute("SELECT id_kp FROM personas_keypoints WHERE id_persona = %s", (id,))
+        kp_ids = [row[0] for row in c.fetchall()]
+
+        # 2. Eliminar relaciones de claves foráneas
+        c.execute("DELETE FROM personas_keypoints WHERE id_persona = %s", (id,))
+
+        # 3. Eliminar imágenes (si las hay)
+        if kp_ids:
+            format_strings = ','.join(['%s'] * len(kp_ids))
+            c.execute(f"DELETE FROM kp WHERE id_kp IN ({format_strings})", kp_ids)
+
+        # 4. Eliminar persona
+        c.execute("DELETE FROM personas WHERE id = %s", (id,))
+
+        db.commit()
+        c.close()
+        db.close()
+
+        return jsonify(message="Usuario eliminado correctamente"), 200
+
+    except Exception as e:
+        return jsonify(error=f"No se pudo eliminar el usuario: {str(e)}"), 500
 
 
 @app.route("/usuarioedit/<int:id>", methods=["PUT", "OPTIONS"])
@@ -275,6 +304,7 @@ def delete_photo(id, kid):
     c.execute("DELETE FROM kp WHERE id_kp=%s",(kid,))
     db.commit(); c.close(); db.close()
     return jsonify(message="Foto eliminada"),200
+    
 
 @app.route("/registrar", methods=["POST"])
 def registrar():
@@ -338,8 +368,58 @@ def registrar():
         return jsonify(error="No se pudo registrar ninguna imagen"), 400
 
     return jsonify(message=f"Registrado con {guardadas} imágenes", id=pid), 200
+    
+@app.route("/buscar", methods=["GET"])
+def buscar_persona():
+    termino = request.args.get("q", "").strip().lower()
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 10))
+    offset = (page - 1) * size
+
+    if not termino:
+        return jsonify(error="Parámetro de búsqueda 'q' requerido"), 400
+
+    try:
+        db, c = connect_db()
+        
+        count_query = """
+            SELECT COUNT(*) FROM personas
+            WHERE LOWER(nombre) LIKE %s
+               OR LOWER(apellido_paterno) LIKE %s
+               OR LOWER(apellido_materno) LIKE %s
+        """
+        like_term = f"%{termino}%"
+        c.execute(count_query, (like_term, like_term, like_term))
+        total = c.fetchone()[0]
+
+        data_query = """
+            SELECT id, nombre, apellido_paterno, requisitoriado
+            FROM personas
+            WHERE LOWER(nombre) LIKE %s
+               OR LOWER(apellido_paterno) LIKE %s
+               OR LOWER(apellido_materno) LIKE %s
+            LIMIT %s OFFSET %s
+        """
+        c.execute(data_query, (like_term, like_term, like_term, size, offset))
+        rows = c.fetchall()
+        c.close(); db.close()
+
+        data = [
+            {
+                "id": r[0],
+                "nombre": r[1],
+                "apellido_paterno": r[2],
+                "requisitoriado": bool(r[3]),
+            }
+            for r in rows
+        ]
+
+        return jsonify(page=page, size=size, total=total, data=data), 200
+
+    except Exception as e:
+        return jsonify(error=f"Error al buscar: {str(e)}"), 500
+
+load_embedder()
 
 if __name__ == "__main__":
-    load_embedder()
-    check_and_run_data_insert()
     app.run(host="0.0.0.0", port=5000, debug=False)
