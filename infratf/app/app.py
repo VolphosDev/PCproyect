@@ -9,6 +9,7 @@ from mtcnn import MTCNN
 from scipy.spatial.distance import cosine
 from siamese_model import L2Norm, CosineDistance, contrastive_loss
 from flask_cors import cross_origin
+import random, string
 
 app = Flask(__name__)
 CORS(app)
@@ -21,6 +22,9 @@ embedder = None
 detector = MTCNN()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def generar_id_alfanumerico(longitud=8):
+    return 'USR' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=longitud - 3))
 
 def load_embedder():
     global embedder
@@ -67,15 +71,17 @@ def connect_db():
     tmp.commit(); cur.close(); tmp.close()
     db = mysql.connector.connect(**cfg); c = db.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS personas (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        nombre VARCHAR(100), apellido_paterno VARCHAR(100),
-        apellido_materno VARCHAR(100), correo VARCHAR(100),
+        id VARCHAR(8) PRIMARY KEY,
+        nombre VARCHAR(100),
+        apellido_paterno VARCHAR(100),
+        apellido_materno VARCHAR(100),
+        correo VARCHAR(100),
         requisitoriado BOOLEAN)""")
     c.execute("""CREATE TABLE IF NOT EXISTS kp (
         id_kp INT AUTO_INCREMENT PRIMARY KEY,
         foto LONGBLOB, KP LONGTEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS personas_keypoints (
-        id_persona INT, id_kp INT,
+        id_persona VARCHAR(8), id_kp INT,
         FOREIGN KEY (id_persona) REFERENCES personas(id),
         FOREIGN KEY (id_kp) REFERENCES kp(id_kp))""")
     db.commit(); return db, c
@@ -167,7 +173,7 @@ def list_users():
     c.close(); db.close()
     return jsonify(page=page, size=size, total=total, data=data), 200
 
-@app.route("/usuario/<int:id>", methods=["GET", "OPTIONS", "DELETE"])
+@app.route("/usuario/<id>", methods=["GET", "OPTIONS", "DELETE"])
 def user_detail(id):
     if request.method == "OPTIONS":
         return '', 200
@@ -200,7 +206,7 @@ def user_detail(id):
         fotos=fotos
     ), 200
 
-@app.route("/delete-user/<int:id>", methods=["DELETE"])
+@app.route("/delete-user/<id>", methods=["DELETE"])
 def eliminar_usuario(id):
     try:
         db, c = connect_db()
@@ -230,7 +236,7 @@ def eliminar_usuario(id):
         return jsonify(error=f"No se pudo eliminar el usuario: {str(e)}"), 500
 
 
-@app.route("/usuarioedit/<int:id>", methods=["PUT", "OPTIONS"])
+@app.route("/usuarioedit/<id>", methods=["PUT", "OPTIONS"])
 def editar_usuario(id):
     data = request.form
     db, c = connect_db()
@@ -297,13 +303,20 @@ def editar_usuario(id):
     return jsonify(message="Datos actualizados correctamente", imagenes_nuevas=guardadas), 200
 
 
-@app.route("/usuario/<int:id>/foto/<int:kid>", methods=["DELETE"])
+@app.route("/usuario/<id>/foto/<int:kid>", methods=["DELETE"])
 def delete_photo(id, kid):
-    db,c = connect_db()
-    c.execute("DELETE FROM personas_keypoints WHERE id_persona=%s AND id_kp=%s",(id,kid))
-    c.execute("DELETE FROM kp WHERE id_kp=%s",(kid,))
-    db.commit(); c.close(); db.close()
-    return jsonify(message="Foto eliminada"),200
+    db, c = connect_db()
+    try:
+        c.execute("DELETE FROM personas_keypoints WHERE id_persona = %s AND id_kp = %s", (id, kid))
+        c.execute("DELETE FROM kp WHERE id_kp = %s", (kid,))
+        db.commit()
+        return jsonify(message="Foto eliminada"), 200
+    except Exception as e:
+        db.rollback()
+        return jsonify(error=f"No se pudo eliminar la foto: {str(e)}"), 500
+    finally:
+        c.close()
+        db.close()
     
 
 @app.route("/registrar", methods=["POST"])
@@ -323,11 +336,11 @@ def registrar():
     pid = row[0] if row else None
 
     if not pid:
-        c.execute("""INSERT INTO personas(nombre, apellido_paterno, apellido_materno, correo, requisitoriado)
-                     VALUES (%s, %s, %s, %s, %s)""",
-                  (data["nombre"], data["apellido_paterno"], data["apellido_materno"],
-                   data["correo"], bool(int(data["requisitoriado"]))))
-        pid = c.lastrowid
+        pid = generar_id_alfanumerico()
+        c.execute("""INSERT INTO personas(id, nombre, apellido_paterno, apellido_materno, correo, requisitoriado)
+        VALUES (%s, %s, %s, %s, %s, %s)""",
+        (pid, data["nombre"], data["apellido_paterno"], data["apellido_materno"],
+        data["correo"], bool(int(data["requisitoriado"]))))
 
     guardadas = 0
 
@@ -372,36 +385,43 @@ def registrar():
 @app.route("/buscar", methods=["GET"])
 def buscar_persona():
     termino = request.args.get("q", "").strip().lower()
+    filtro = request.args.get("filtro", "todos").lower()
     page = int(request.args.get("page", 1))
     size = int(request.args.get("size", 10))
     offset = (page - 1) * size
 
-    if not termino:
-        return jsonify(error="Parámetro de búsqueda 'q' requerido"), 400
-
     try:
         db, c = connect_db()
-        
-        count_query = """
-            SELECT COUNT(*) FROM personas
-            WHERE LOWER(nombre) LIKE %s
-               OR LOWER(apellido_paterno) LIKE %s
-               OR LOWER(apellido_materno) LIKE %s
-        """
-        like_term = f"%{termino}%"
-        c.execute(count_query, (like_term, like_term, like_term))
+        condiciones = []
+        valores = []
+
+        if termino:
+            condiciones.append("(LOWER(id) LIKE %s OR LOWER(nombre) LIKE %s OR LOWER(apellido_paterno) LIKE %s OR LOWER(apellido_materno) LIKE %s)")
+            like_term = f"%{termino}%"
+            valores.extend([like_term, like_term, like_term, like_term])
+
+        if filtro == "true":
+            condiciones.append("requisitoriado = TRUE")
+        elif filtro == "false":
+            condiciones.append("requisitoriado = FALSE")
+
+        where_clause = "WHERE " + " AND ".join(condiciones) if condiciones else ""
+
+        # Conteo
+        count_query = f"SELECT COUNT(*) FROM personas {where_clause}"
+        c.execute(count_query, valores)
         total = c.fetchone()[0]
 
-        data_query = """
-            SELECT id, nombre, apellido_paterno, requisitoriado
+        # Datos paginados
+        data_query = f"""
+            SELECT id, nombre, apellido_paterno, apellido_materno, requisitoriado
             FROM personas
-            WHERE LOWER(nombre) LIKE %s
-               OR LOWER(apellido_paterno) LIKE %s
-               OR LOWER(apellido_materno) LIKE %s
+            {where_clause}
             LIMIT %s OFFSET %s
         """
-        c.execute(data_query, (like_term, like_term, like_term, size, offset))
+        c.execute(data_query, valores + [size, offset])
         rows = c.fetchall()
+
         c.close(); db.close()
 
         data = [
@@ -409,7 +429,8 @@ def buscar_persona():
                 "id": r[0],
                 "nombre": r[1],
                 "apellido_paterno": r[2],
-                "requisitoriado": bool(r[3]),
+                "apellido_materno": r[3],
+                "requisitoriado": bool(r[4]),
             }
             for r in rows
         ]

@@ -5,7 +5,7 @@ import uuid
 import numpy as np
 import json
 from mtcnn import MTCNN  # ← NUEVO
-from app import connect_db, extract_face_vector
+from app import connect_db, extract_face_vector, generar_id_alfanumerico
 
 PHOTOS_DIR = "photos"
 detector = MTCNN()  # ← NUEVO
@@ -44,10 +44,10 @@ def procesar_y_guardar(img_bgr, nombre, apellido_p, correo, apellido_m=""):
     pid = row[0] if row else None
 
     if not pid:
-        c.execute("""INSERT INTO personas(nombre, apellido_paterno, apellido_materno, correo, requisitoriado)
-                     VALUES (%s, %s, %s, %s, %s)""",
-                  (nombre, apellido_p, apellido_m, correo, random.choice([0, 1])))
-        pid = c.lastrowid
+        pid = generar_id_alfanumerico()
+        c.execute("""INSERT INTO personas(id, nombre, apellido_paterno, apellido_materno, correo, requisitoriado)
+            VALUES (%s, %s, %s, %s, %s, %s)""",
+            (pid, nombre, apellido_p, apellido_m, correo, random.choice([0, 1])))
 
     # Detección de rostro con MTCNN
     detections = detector.detect_faces(img_bgr)
